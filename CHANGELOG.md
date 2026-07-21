@@ -9,8 +9,10 @@ o projeto segue [SemVer](https://semver.org/lang/pt-BR/).
 
 - `FlareHandler`: a exceção (`exc_info`) agora vira um objeto estruturado no
   atributo `exception`, com `type` (ex.: `"ValueError"`), `message`, `traceback`
-  (a stack completa como string) e `where` (`arquivo.py:linha in funcao` do último
-  frame). Antes era um blob de texto com a stack crua — ilegível e não consultável.
+  (a stack completa como string) e `where` — o formato LITERAL
+  `` `<arquivo>:<linha> in <função>` `` do último frame (o `in` é literal, no padrão
+  de traceback do Python; ex.: `main.py:158 in send_facebook_pixel`). Antes a
+  exceção era um blob de texto com a stack crua — ilegível e não consultável.
   Agora o front do Flare mostra tipo/mensagem/onde separados e filtráveis. A
   extração é protegida (never-raise): se falhar, cai num `where=""` e no traceback
   via `formatException`.
