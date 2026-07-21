@@ -6,7 +6,7 @@ name: Publish
 # humano, no site do PyPI):
 #   1. Criar o projeto `flare-sdk` no PyPI.
 #   2. Em "Publishing", adicionar um publisher confiável apontando para
-#      londarks/flare-sdk, workflow `publish.yml`, environment `pypi`.
+#      flyrecheckout/flare-sdk, workflow `publish.yml`, environment `pypi`.
 
 on:
   release:

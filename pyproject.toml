@@ -42,8 +42,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/londarks/flare-sdk"
-Repository = "https://github.com/londarks/flare-sdk"
+Homepage = "https://github.com/flyrecheckout/flare-sdk"
+Repository = "https://github.com/flyrecheckout/flare-sdk"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/flare_sdk"]
