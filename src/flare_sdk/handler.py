@@ -13,6 +13,9 @@ O mapeamento LogRecord → evento do Flare
 * ``record.levelname`` → ``severity`` (DEBUG/INFO/WARNING/ERROR/CRITICAL: o Flare
   conhece todos esses nomes).
 * ``record.name`` → atributo ``logger``; ``exc_info`` → atributo ``exception``.
+* Origem do log → atributos ``file`` (``pathname``), ``func`` (``funcName``),
+  ``line`` (``lineno``) e ``module`` — o "de onde saiu", que a tela mostra no
+  Context. Sem isso, achar a linha que emitiu a mensagem seria caça no código.
 * O que veio via ``extra={...}`` vira atributo — é assim que campos estruturados
   (``order_id``, ``user_id``) chegam ao Flare sem virar texto no meio da mensagem.
 
@@ -38,12 +41,19 @@ from .client import Flare
 #: que só o que o usuário passou via ``extra={...}`` vire atributo do Flare — senão
 #: cada evento carregaria ``pathname``, ``threadName`` e afins, ruído puro. O nome
 #: ``message``/``asctime`` também entra: são derivados que o formatter cria.
+#:
+#: ``file``/``func``/``line`` NÃO são nomes de atributo padrão do LogRecord (os
+#: padrão são ``pathname``/``funcName``/``lineno``), então o ``logging`` deixa um
+#: ``extra={"file": ...}`` passar. Reservá-los aqui impede que esse extra
+#: sobrescreva a ORIGEM real que ``_to_event`` derivou — o valor de negócio do
+#: usuário não deve poder mentir sobre de onde o log saiu. (``module`` já é padrão.)
 _RESERVED_RECORD_ATTRS = frozenset(
     {
         "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
         "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
         "created", "msecs", "relativeCreated", "thread", "threadName",
         "processName", "process", "taskName", "message", "asctime",
+        "file", "func", "line",
     }
 )
 
@@ -89,12 +99,22 @@ class FlareHandler(logging.Handler):
             self.handleError(record)
 
     def _to_event(self, record: logging.LogRecord) -> dict:
-        """LogRecord → dict no contrato do ``/ingest``."""
+        """LogRecord → dict no contrato do ``/ingest``.
+
+        Anexa a ORIGEM do log (``file``/``func``/``line``/``module``) além do
+        ``logger``: é a metade útil do contexto — "de onde este log saiu". Sem ela,
+        o dashboard mostraria só o nome do logger, e achar a linha que emitiu a
+        mensagem viraria caça no código. São atributos (viram Context na tela).
+        """
         event: dict[str, Any] = {
             "dt": record.created,
             "message": record.getMessage(),
             "severity": record.levelname,
             "logger": record.name,
+            "file": record.pathname,
+            "func": record.funcName,
+            "line": record.lineno,
+            "module": record.module,
         }
         if record.exc_info:
             event["exception"] = self._exception_object(record.exc_info)

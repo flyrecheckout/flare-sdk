@@ -30,6 +30,34 @@ def test_maps_level_message_logger() -> None:
     assert "dt" in event
 
 
+def test_source_location_is_attached_as_context() -> None:
+    """Todo log carrega a ORIGEM (file/func/line/module) — o "de onde saiu", que
+    vira o Context na tela. Sem isso o dashboard só teria o nome do logger."""
+    client = FakeClient()
+    logger = _logger_with(FlareHandler(client=client), "t.src")
+    logger.info("oi")
+
+    event = client.events[0]
+    assert event["file"].endswith("test_handler.py")
+    assert event["func"] == "test_source_location_is_attached_as_context"
+    assert isinstance(event["line"], int) and event["line"] > 0
+    assert event["module"] == "test_handler"
+
+
+def test_a_user_extra_cannot_overwrite_the_real_source_location() -> None:
+    """`extra={"file"/"func"/"line": ...}` é permitido pelo logging (não são nomes
+    padrão), mas não pode SOBRESCREVER a origem real que o handler derivou — o dado
+    de negócio do usuário não deve poder mentir sobre de onde o log saiu."""
+    client = FakeClient()
+    logger = _logger_with(FlareHandler(client=client), "t.src.spoof")
+    logger.info("oi", extra={"file": "MENTIRA.py", "func": "fake", "line": -1})
+
+    event = client.events[0]
+    assert event["file"].endswith("test_handler.py")  # a origem REAL, não a mentira
+    assert event["func"] == "test_a_user_extra_cannot_overwrite_the_real_source_location"
+    assert event["line"] > 0
+
+
 def test_extra_fields_become_attributes() -> None:
     client = FakeClient()
     logger = _logger_with(FlareHandler(client=client), "t.extra")
