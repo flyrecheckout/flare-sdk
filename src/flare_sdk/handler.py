@@ -115,10 +115,15 @@ class FlareHandler(logging.Handler):
         traceback via ``formatException`` — nunca deixa a montagem do evento subir.
         """
         exc_type, exc_value, exc_tb = exc_info
+        # A stack, com fallback DO fallback: `formatException` também pode levantar,
+        # e aí a string vazia é o último recurso — a montagem nunca sobe.
         try:
             stack = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
         except Exception:  # noqa: BLE001
-            stack = logging.Formatter().formatException(exc_info)
+            try:
+                stack = logging.Formatter().formatException(exc_info)
+            except Exception:  # noqa: BLE001
+                stack = ""
         where = ""
         try:
             frames = traceback.extract_tb(exc_tb)
@@ -127,9 +132,22 @@ class FlareHandler(logging.Handler):
                 where = f"{os.path.basename(last.filename)}:{last.lineno} in {last.name}"
         except Exception:  # noqa: BLE001
             where = ""
+        # `type`/`message` também sob proteção: um exc_value com `__str__` (ou
+        # `__bool__`) que levanta não pode derrubar o handler de erro. Checa `None`
+        # (não truthiness — um `__bool__` exótico), converte protegido, cai em "".
+        try:
+            type_name = exc_type.__name__ if exc_type is not None else ""
+        except Exception:  # noqa: BLE001
+            type_name = ""
+        message = ""
+        if exc_value is not None:
+            try:
+                message = str(exc_value)
+            except Exception:  # noqa: BLE001
+                message = ""
         return {
-            "type": exc_type.__name__ if exc_type else "",
-            "message": str(exc_value) if exc_value else "",
+            "type": type_name,
+            "message": message,
             "traceback": stack,
             "where": where,
         }

@@ -241,6 +241,19 @@ def test_sensitive_request_header_is_redacted() -> None:
     assert headers["authorization"] == "***"
 
 
+def test_api_key_request_header_is_redacted() -> None:
+    """O `api-key` (sem o prefixo x-) é credencial e NUNCA pode ir cru ao dashboard."""
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client, capture_request_headers=True)
+    TestClient(app).get("/ok", headers={"api-key": "super-secret-key"})
+
+    headers = client.requests[0]["attrs"]["request_headers"]
+    assert headers["api-key"] == "***"
+    assert "super-secret-key" not in str(client.requests[0]["attrs"])
+
+
 def test_sensitive_response_header_is_redacted() -> None:
     from starlette.testclient import TestClient
 

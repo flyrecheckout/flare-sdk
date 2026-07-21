@@ -78,6 +78,7 @@ _SENSITIVE_HEADERS = frozenset(
         "proxy-authorization",
         "cookie",
         "set-cookie",
+        "api-key",
         "x-api-key",
         "x-auth-token",
     }

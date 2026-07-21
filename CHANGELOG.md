@@ -16,7 +16,7 @@ o projeto segue [SemVer](https://semver.org/lang/pt-BR/).
   via `formatException`.
 - `FlareMiddleware`: captura opt-in dos headers da request e da response
   (`capture_request_headers` / `capture_response_headers`), enviados como os
-  atributos `request_headers` / `response_headers` — cada um um dict `{nome: valor}`
+  atributos `request_headers` / `response_headers` — cada atributo é um dict `{nome: valor}`
   (nomes em minúsculas, valores decodificados latin-1). Headers sensíveis
   (`authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`,
   `x-auth-token`) têm o VALOR redigido para `"***"` — o nome permanece, o segredo
