@@ -24,12 +24,15 @@ class _RecordingClient(FakeClient):
                 "path": path,
                 "status_code": status_code,
                 "duration_ms": duration_ms,
+                "attrs": attrs,
             }
         )
         return True
 
 
 def _app(client: _RecordingClient, **mw_kwargs) -> Starlette:
+    from starlette.responses import JSONResponse, Response
+
     async def ok(request):  # noqa: ANN001, ANN201
         return PlainTextResponse("ok")
 
@@ -42,12 +45,23 @@ def _app(client: _RecordingClient, **mw_kwargs) -> Starlette:
     async def health(request):  # noqa: ANN001, ANN201
         return PlainTextResponse("healthy")
 
+    async def echo(request):  # noqa: ANN001, ANN201
+        # Lê o corpo (prova que o middleware NÃO consome à frente) e o devolve.
+        body = await request.body()
+        return JSONResponse({"received": body.decode("utf-8")})
+
+    async def blob(request):  # noqa: ANN001, ANN201
+        # Resposta binária: a captura deve IGNORAR pelo Content-Type.
+        return Response(b"\x89PNG\r\n\x00\x01", media_type="image/png")
+
     app = Starlette(
         routes=[
             Route("/ok", ok),
             Route("/orders/{order_id}", show),
             Route("/boom", boom),
             Route("/health", health),
+            Route("/echo", echo, methods=["POST"]),
+            Route("/blob", blob),
         ]
     )
     app.add_middleware(FlareMiddleware, client=client, **mw_kwargs)
@@ -108,3 +122,75 @@ def test_exception_records_500_and_reraises() -> None:
     (req,) = client.requests
     assert req["status_code"] == 500
     assert req["path"] == "/boom"
+
+
+# ── Captura de corpo (opt-in) ─────────────────────────────────────────────────
+
+
+def test_bodies_not_captured_by_default() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client)  # sem os flags
+    TestClient(app).post("/echo", content='{"a":1}')
+    assert client.requests[0]["attrs"] == {}
+
+
+def test_captures_request_and_response_bodies_when_enabled() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client, capture_request_body=True, capture_response_body=True)
+    TestClient(app).post("/echo", content='{"order":42}',
+                         headers={"content-type": "application/json"})
+
+    attrs = client.requests[0]["attrs"]
+    # A request foi lida pelo handler (echo) E capturada pelo middleware — a
+    # observação não consome o corpo à frente.
+    assert attrs["request_body"] == '{"order":42}'
+    assert attrs["response_body"] == '{"received":"{\\"order\\":42}"}'
+
+
+def test_capture_response_only_leaves_request_out() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client, capture_response_body=True)  # só a resposta
+    TestClient(app).post("/echo", content='{"a":1}',
+                         headers={"content-type": "application/json"})
+
+    attrs = client.requests[0]["attrs"]
+    assert "request_body" not in attrs
+    assert "response_body" in attrs
+
+
+def test_binary_response_body_is_skipped_by_content_type() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client, capture_response_body=True)
+    TestClient(app).get("/blob")  # image/png
+    assert "response_body" not in client.requests[0]["attrs"]
+
+
+def test_response_body_is_capped_at_max_bytes() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client, capture_response_body=True, max_body_bytes=10)
+    # /echo devolve um JSON maior que 10 bytes; a captura para no cap.
+    TestClient(app).post("/echo", content='{"x":"aaaaaaaaaaaaaaaaaaaa"}',
+                         headers={"content-type": "application/json"})
+    assert len(client.requests[0]["attrs"]["response_body"]) == 10
+
+
+def test_non_http_scopes_pass_through_untouched() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client)
+    # O `with` dispara o ciclo de lifespan (scope type != http): o middleware o
+    # repassa intocado e não registra request nenhuma por causa dele.
+    with TestClient(app):
+        pass
+    assert client.requests == []

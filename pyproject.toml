@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "flare-sdk"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cliente leve para enviar logs e requests ao Flare (observabilidade da lunacheckout)."
 readme = "README.md"
 license = { text = "MIT" }
