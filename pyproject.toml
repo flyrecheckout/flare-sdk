@@ -50,6 +50,10 @@ packages = ["src/flare_sdk"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A raiz no path para que `from tests.conftest import ...` resolva tanto sob
+# `pytest` (console script) quanto `python -m pytest` — sem isto, o console
+# script não põe o cwd no sys.path e a coleta morre em ModuleNotFoundError.
+pythonpath = ["."]
 addopts = [
     "--cov=flare_sdk",
     "--cov-report=term-missing",
