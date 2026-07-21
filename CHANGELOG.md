@@ -3,6 +3,15 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
 o projeto segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.4.0]
+
+### Adicionado
+
+- `FlareHandler`: cada log passa a carregar a ORIGEM como atributos — `file`
+  (`pathname`), `func` (`funcName`), `line` (`lineno`) e `module`. É o "de onde o
+  log saiu", que a tela de detalhe do Flare mostra no Context. Antes só ia o
+  `logger` (o nome), e achar a linha que emitiu a mensagem virava caça no código.
+
 ## [0.3.0]
 
 ### Adicionado

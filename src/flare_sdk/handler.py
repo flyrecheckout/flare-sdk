@@ -13,6 +13,9 @@ O mapeamento LogRecord → evento do Flare
 * ``record.levelname`` → ``severity`` (DEBUG/INFO/WARNING/ERROR/CRITICAL: o Flare
   conhece todos esses nomes).
 * ``record.name`` → atributo ``logger``; ``exc_info`` → atributo ``exception``.
+* Origem do log → atributos ``file`` (``pathname``), ``func`` (``funcName``),
+  ``line`` (``lineno``) e ``module`` — o "de onde saiu", que a tela mostra no
+  Context. Sem isso, achar a linha que emitiu a mensagem seria caça no código.
 * O que veio via ``extra={...}`` vira atributo — é assim que campos estruturados
   (``order_id``, ``user_id``) chegam ao Flare sem virar texto no meio da mensagem.
 
@@ -89,12 +92,22 @@ class FlareHandler(logging.Handler):
             self.handleError(record)
 
     def _to_event(self, record: logging.LogRecord) -> dict:
-        """LogRecord → dict no contrato do ``/ingest``."""
+        """LogRecord → dict no contrato do ``/ingest``.
+
+        Anexa a ORIGEM do log (``file``/``func``/``line``/``module``) além do
+        ``logger``: é a metade útil do contexto — "de onde este log saiu". Sem ela,
+        o dashboard mostraria só o nome do logger, e achar a linha que emitiu a
+        mensagem viraria caça no código. São atributos (viram Context na tela).
+        """
         event: dict[str, Any] = {
             "dt": record.created,
             "message": record.getMessage(),
             "severity": record.levelname,
             "logger": record.name,
+            "file": record.pathname,
+            "func": record.funcName,
+            "line": record.lineno,
+            "module": record.module,
         }
         if record.exc_info:
             event["exception"] = self._exception_object(record.exc_info)
