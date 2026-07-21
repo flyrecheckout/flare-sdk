@@ -51,7 +51,7 @@ def test_standard_record_attrs_do_not_leak() -> None:
         assert noise not in event
 
 
-def test_exception_is_captured() -> None:
+def test_exception_is_captured_as_structured_object() -> None:
     client = FakeClient()
     logger = _logger_with(FlareHandler(client=client), "t.exc")
     try:
@@ -61,7 +61,46 @@ def test_exception_is_captured() -> None:
 
     event = client.events[0]
     assert event["severity"] == "ERROR"
-    assert "ValueError: boom" in event["exception"]
+    exc = event["exception"]
+    # Agora é um objeto estruturado, não mais a stack crua numa string.
+    assert isinstance(exc, dict)
+    assert exc["type"] == "ValueError"
+    assert "boom" in exc["message"]
+    assert "ValueError" in exc["traceback"]
+    # ``where`` aponta o último frame: este arquivo e a linha do ``raise``.
+    assert "test_handler.py:" in exc["where"]
+    assert " in test_exception_is_captured_as_structured_object" in exc["where"]
+
+
+def test_exception_object_never_raises_on_a_hostile_str() -> None:
+    """Uma exceção cujo ``__str__`` explode não pode derrubar a montagem do evento.
+
+    É o pior caso do never-raise: ``format_exception`` E o ``formatException`` de
+    fallback chamam ``str(exc_value)`` e também estourariam; ``str(exc_value)`` no
+    ``message`` idem. A montagem tem de sobreviver com fallbacks primitivos — senão
+    o handler de ERRO seria o que derruba a app ao logar um erro.
+    """
+    import sys
+
+    class Hostile(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("str explodiu")
+
+    try:
+        raise Hostile()
+    except Hostile:
+        exc_info = sys.exc_info()
+
+    obj = FlareHandler._exception_object(exc_info)  # não pode levantar
+
+    assert isinstance(obj, dict)
+    assert obj["type"] == "Hostile"
+    # `str(exc_value)` direto estourou → o `message` caiu no fallback vazio. (O
+    # `format_exception` do traceback NÃO estoura — ele tolera o __str__ ruim e põe
+    # um placeholder —, então o traceback é uma string, só não vem vazio.)
+    assert obj["message"] == ""
+    assert isinstance(obj["traceback"], str)
+    assert isinstance(obj["where"], str)
 
 
 def test_emit_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:

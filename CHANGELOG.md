@@ -3,6 +3,27 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
 o projeto segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.3.0]
+
+### Adicionado
+
+- `FlareHandler`: a exceção (`exc_info`) agora vira um objeto estruturado no
+  atributo `exception`, com `type` (ex.: `"ValueError"`), `message`, `traceback`
+  (a stack completa como string) e `where` — o formato LITERAL
+  `` `<arquivo>:<linha> in <função>` `` do último frame (o `in` é literal, no padrão
+  de traceback do Python; ex.: `main.py:158 in send_facebook_pixel`). Antes a
+  exceção era um blob de texto com a stack crua — ilegível e não consultável.
+  Agora o front do Flare mostra tipo/mensagem/onde separados e filtráveis. A
+  extração é protegida (never-raise): se falhar, cai num `where=""` e no traceback
+  via `formatException`.
+- `FlareMiddleware`: captura opt-in dos headers da request e da response
+  (`capture_request_headers` / `capture_response_headers`), enviados como os
+  atributos `request_headers` / `response_headers` — cada atributo é um dict `{nome: valor}`
+  (nomes em minúsculas, valores decodificados latin-1). Headers sensíveis
+  (`authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `api-key`,
+  `x-api-key`, `x-auth-token`) têm o VALOR redigido para `"***"` — o nome permanece,
+  o segredo não vaza para o dashboard. OFF por padrão.
+
 ## [0.2.0]
 
 ### Adicionado

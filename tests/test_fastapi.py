@@ -54,6 +54,10 @@ def _app(client: _RecordingClient, **mw_kwargs) -> Starlette:
         # Resposta binária: a captura deve IGNORAR pelo Content-Type.
         return Response(b"\x89PNG\r\n\x00\x01", media_type="image/png")
 
+    async def secret(request):  # noqa: ANN001, ANN201
+        # Devolve um header sensível (set-cookie) para provar a redação.
+        return PlainTextResponse("ok", headers={"set-cookie": "sid=abc123"})
+
     app = Starlette(
         routes=[
             Route("/ok", ok),
@@ -62,6 +66,7 @@ def _app(client: _RecordingClient, **mw_kwargs) -> Starlette:
             Route("/health", health),
             Route("/echo", echo, methods=["POST"]),
             Route("/blob", blob),
+            Route("/secret", secret),
         ]
     )
     app.add_middleware(FlareMiddleware, client=client, **mw_kwargs)
@@ -182,6 +187,82 @@ def test_response_body_is_capped_at_max_bytes() -> None:
     TestClient(app).post("/echo", content='{"x":"aaaaaaaaaaaaaaaaaaaa"}',
                          headers={"content-type": "application/json"})
     assert len(client.requests[0]["attrs"]["response_body"]) == 10
+
+
+# ── Captura de headers (opt-in) ───────────────────────────────────────────────
+
+
+def test_headers_not_captured_by_default() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client)  # sem os flags
+    TestClient(app).get("/ok", headers={"x-trace": "abc"})
+    attrs = client.requests[0]["attrs"]
+    assert "request_headers" not in attrs
+    assert "response_headers" not in attrs
+
+
+def test_captures_request_headers_when_enabled() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client, capture_request_headers=True)
+    TestClient(app).get("/ok", headers={"x-trace": "abc"})
+
+    headers = client.requests[0]["attrs"]["request_headers"]
+    assert isinstance(headers, dict)
+    # Nomes em minúsculas; o valor não-sensível passa cru.
+    assert headers["x-trace"] == "abc"
+
+
+def test_captures_response_headers_when_enabled() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client, capture_response_headers=True)
+    TestClient(app).get("/ok")
+
+    headers = client.requests[0]["attrs"]["response_headers"]
+    assert isinstance(headers, dict)
+    # A response do PlainTextResponse sempre carimba content-type.
+    assert "content-type" in headers
+
+
+def test_sensitive_request_header_is_redacted() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client, capture_request_headers=True)
+    TestClient(app).get("/ok", headers={"authorization": "Bearer secret-token"})
+
+    headers = client.requests[0]["attrs"]["request_headers"]
+    # O nome fica (o operador vê que existe), mas o segredo é redigido.
+    assert headers["authorization"] == "***"
+
+
+def test_api_key_request_header_is_redacted() -> None:
+    """O `api-key` (sem o prefixo x-) é credencial e NUNCA pode ir cru ao dashboard."""
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client, capture_request_headers=True)
+    TestClient(app).get("/ok", headers={"api-key": "super-secret-key"})
+
+    headers = client.requests[0]["attrs"]["request_headers"]
+    assert headers["api-key"] == "***"
+    assert "super-secret-key" not in str(client.requests[0]["attrs"])
+
+
+def test_sensitive_response_header_is_redacted() -> None:
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    app = _app(client, capture_response_headers=True)
+    TestClient(app).get("/secret")
+
+    headers = client.requests[0]["attrs"]["response_headers"]
+    assert headers["set-cookie"] == "***"
 
 
 def test_non_http_scopes_pass_through_untouched() -> None:
