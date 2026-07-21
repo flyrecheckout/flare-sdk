@@ -18,9 +18,9 @@ o projeto segue [SemVer](https://semver.org/lang/pt-BR/).
   (`capture_request_headers` / `capture_response_headers`), enviados como os
   atributos `request_headers` / `response_headers` — cada atributo é um dict `{nome: valor}`
   (nomes em minúsculas, valores decodificados latin-1). Headers sensíveis
-  (`authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`,
-  `x-auth-token`) têm o VALOR redigido para `"***"` — o nome permanece, o segredo
-  não vaza para o dashboard. OFF por padrão.
+  (`authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `api-key`,
+  `x-api-key`, `x-auth-token`) têm o VALOR redigido para `"***"` — o nome permanece,
+  o segredo não vaza para o dashboard. OFF por padrão.
 
 ## [0.2.0]
 
