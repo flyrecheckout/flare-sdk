@@ -15,6 +15,16 @@ Instalação (uma linha)::
     flare = Flare(token="...", endpoint="https://flare.example.com/ingest")
     app.add_middleware(FlareMiddleware, client=flare)
 
+Corpo da request/response (opt-in)
+----------------------------------
+Com ``capture_request_body`` / ``capture_response_body`` o middleware anexa o corpo
+como os atributos ``request_body`` / ``response_body`` — as chaves que a tela de
+detalhe do Flare mostra nas abas Request/Response ("o que foi enviado / o que foi
+devolvido"). O corpo é **capado** em ``max_body_bytes`` e só capturado se o
+``Content-Type`` for textual (JSON, texto, form) — binário (imagem, octet-stream)
+é ignorado. ⚠️ O corpo pode conter dado sensível (PII, tokens): ligue por rota/app
+com consciência, é OFF por padrão.
+
 Duas decisões de desenho
 ------------------------
 * **Só observa, nunca interfere.** Se a app levanta, o middleware registra a request
@@ -27,13 +37,52 @@ Duas decisões de desenho
 from __future__ import annotations
 
 import time
-from typing import Any, Awaitable, Callable, Iterable, MutableMapping
+from typing import Any, Awaitable, Callable, Iterable, MutableMapping, Optional
 
 from .client import Flare
 
 Scope = MutableMapping[str, Any]
 Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
 Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
+
+#: Content-Types cujo corpo vale a pena capturar como texto. Binário fora daqui
+#: (imagem, octet-stream) viraria lixo com caracteres de substituição — não se
+#: captura. Um Content-Type ausente é tratado como textual (best-effort): a maioria
+#: das APIs JSON o define, e o que não define costuma ser texto simples.
+_TEXTUAL_PREFIXES = (
+    "application/json",
+    "application/xml",
+    "application/xhtml",
+    "application/x-www-form-urlencoded",
+    "text/",
+)
+
+
+def _content_type(headers: Any) -> str:
+    """O ``content-type`` (sem os parâmetros após ``;``), em minúsculas, ou ``""``."""
+    for key, value in headers or []:
+        if key.lower() == b"content-type":
+            return value.decode("latin-1", "replace").split(";")[0].strip().lower()
+    return ""
+
+
+def _is_textual(content_type: str) -> bool:
+    """O corpo desse ``content-type`` é texto capturável? Ausente conta como sim."""
+    if not content_type:
+        return True
+    return any(content_type.startswith(prefix) for prefix in _TEXTUAL_PREFIXES)
+
+
+def _decode_body(buffer: bytearray, content_type: str) -> Optional[str]:
+    """Bytes acumulados → texto, ou ``None`` se vazio ou não-textual.
+
+    ``errors="replace"`` porque um corte no meio de um caractere multibyte (o cap
+    de tamanho não respeita fronteira de UTF-8) não pode derrubar a captura — um �
+    é melhor que uma exceção que perde o evento inteiro.
+    """
+    if not buffer or not _is_textual(content_type):
+        return None
+    return bytes(buffer).decode("utf-8", errors="replace") or None
 
 
 class FlareMiddleware:
@@ -46,6 +95,9 @@ class FlareMiddleware:
         client: Flare,
         group_paths: bool = True,
         ignore_paths: Iterable[str] = ("/health", "/metrics", "/ingest"),
+        capture_request_body: bool = False,
+        capture_response_body: bool = False,
+        max_body_bytes: int = 16384,
     ) -> None:
         self.app = app
         self._client = client
@@ -53,6 +105,9 @@ class FlareMiddleware:
         # Rotas de infra (health, scrape de métrica) inundariam a telemetria com
         # ruído de alta frequência e zero valor de investigação.
         self._ignore = frozenset(ignore_paths)
+        self._capture_request = capture_request_body
+        self._capture_response = capture_response_body
+        self._max_body = max(0, max_body_bytes)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         # Só HTTP interessa: lifespan e websocket passam intocados.
@@ -69,32 +124,82 @@ class FlareMiddleware:
         # 500 é o default: se a app estourar antes de mandar o start, a request foi
         # um erro não-tratado — e é exatamente isso que o status deve refletir.
         status_holder = {"code": 500}
+        request_body = bytearray()
+        response_body = bytearray()
+        response_ct = {"value": ""}
+
+        async def receive_wrapper() -> MutableMapping[str, Any]:
+            # Observa o corpo da request enquanto ele PASSA para a app — sem consumir
+            # à frente (a app ainda recebe cada mensagem), então não há replay.
+            message = await receive()
+            if (
+                self._capture_request
+                and message["type"] == "http.request"
+                and len(request_body) < self._max_body
+            ):
+                chunk = message.get("body", b"")
+                request_body.extend(chunk[: self._max_body - len(request_body)])
+            return message
 
         async def send_wrapper(message: MutableMapping[str, Any]) -> None:
-            if message["type"] == "http.response.start":
+            mtype = message["type"]
+            if mtype == "http.response.start":
                 status_holder["code"] = message["status"]
+                if self._capture_response:
+                    response_ct["value"] = _content_type(message.get("headers"))
+            elif (
+                mtype == "http.response.body"
+                and self._capture_response
+                and len(response_body) < self._max_body
+            ):
+                chunk = message.get("body", b"")
+                response_body.extend(chunk[: self._max_body - len(response_body)])
             await send(message)
+
+        # Só embrulha o receive quando há razão — a captura de request é o único
+        # caso que precisa dele; senão passa o original e evita uma indireção.
+        inner_receive = receive_wrapper if self._capture_request else receive
 
         start = time.perf_counter()
         try:
-            await self.app(scope, receive, send_wrapper)
+            await self.app(scope, inner_receive, send_wrapper)
         except Exception:
             # Registra o 500 e RE-LEVANTA: o middleware observa, não sequestra o erro.
-            self._record(scope, method, path, status_holder["code"], start)
+            self._record(scope, method, path, status_holder["code"], start,
+                         request_body, response_body, response_ct["value"])
             raise
         else:
-            self._record(scope, method, path, status_holder["code"], start)
+            self._record(scope, method, path, status_holder["code"], start,
+                         request_body, response_body, response_ct["value"])
 
     def _record(
-        self, scope: Scope, method: str, path: str, status_code: int, start: float
+        self,
+        scope: Scope,
+        method: str,
+        path: str,
+        status_code: int,
+        start: float,
+        request_body: bytearray,
+        response_body: bytearray,
+        response_ct: str,
     ) -> None:
         """Enfileira a request no Flare. ``client.request`` já é never-raise."""
         duration_ms = round((time.perf_counter() - start) * 1000, 3)
+        attributes: dict[str, Any] = {}
+        if self._capture_request:
+            text = _decode_body(request_body, _content_type(scope.get("headers")))
+            if text is not None:
+                attributes["request_body"] = text
+        if self._capture_response:
+            text = _decode_body(response_body, response_ct)
+            if text is not None:
+                attributes["response_body"] = text
         self._client.request(
             method,
             self._route_template(scope) if self._group_paths else path,
             status_code,
             duration_ms=duration_ms,
+            **attributes,
         )
 
     @staticmethod
