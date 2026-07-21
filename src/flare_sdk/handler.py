@@ -41,12 +41,19 @@ from .client import Flare
 #: que só o que o usuário passou via ``extra={...}`` vire atributo do Flare — senão
 #: cada evento carregaria ``pathname``, ``threadName`` e afins, ruído puro. O nome
 #: ``message``/``asctime`` também entra: são derivados que o formatter cria.
+#:
+#: ``file``/``func``/``line`` NÃO são nomes de atributo padrão do LogRecord (os
+#: padrão são ``pathname``/``funcName``/``lineno``), então o ``logging`` deixa um
+#: ``extra={"file": ...}`` passar. Reservá-los aqui impede que esse extra
+#: sobrescreva a ORIGEM real que ``_to_event`` derivou — o valor de negócio do
+#: usuário não deve poder mentir sobre de onde o log saiu. (``module`` já é padrão.)
 _RESERVED_RECORD_ATTRS = frozenset(
     {
         "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
         "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
         "created", "msecs", "relativeCreated", "thread", "threadName",
         "processName", "process", "taskName", "message", "asctime",
+        "file", "func", "line",
     }
 )
 
