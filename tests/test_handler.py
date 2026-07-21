@@ -51,7 +51,7 @@ def test_standard_record_attrs_do_not_leak() -> None:
         assert noise not in event
 
 
-def test_exception_is_captured() -> None:
+def test_exception_is_captured_as_structured_object() -> None:
     client = FakeClient()
     logger = _logger_with(FlareHandler(client=client), "t.exc")
     try:
@@ -61,7 +61,15 @@ def test_exception_is_captured() -> None:
 
     event = client.events[0]
     assert event["severity"] == "ERROR"
-    assert "ValueError: boom" in event["exception"]
+    exc = event["exception"]
+    # Agora é um objeto estruturado, não mais a stack crua numa string.
+    assert isinstance(exc, dict)
+    assert exc["type"] == "ValueError"
+    assert "boom" in exc["message"]
+    assert "ValueError" in exc["traceback"]
+    # ``where`` aponta o último frame: este arquivo e a linha do ``raise``.
+    assert "test_handler.py:" in exc["where"]
+    assert " in test_exception_is_captured_as_structured_object" in exc["where"]
 
 
 def test_emit_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:

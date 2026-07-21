@@ -25,6 +25,17 @@ devolvido"). O corpo é **capado** em ``max_body_bytes`` e só capturado se o
 é ignorado. ⚠️ O corpo pode conter dado sensível (PII, tokens): ligue por rota/app
 com consciência, é OFF por padrão.
 
+Headers da request/response (opt-in)
+------------------------------------
+Com ``capture_request_headers`` / ``capture_response_headers`` o middleware anexa os
+headers como os atributos ``request_headers`` / ``response_headers`` — cada um um
+dict ``{nome: valor}`` (nomes em minúsculas, valores decodificados latin-1).
+Também OFF por padrão. Headers sensíveis (``authorization``,
+``proxy-authorization``, ``cookie``, ``set-cookie``, ``x-api-key``,
+``x-auth-token``) têm o VALOR redigido para ``"***"`` — o nome permanece para o
+operador ver que o header existe, mas o segredo não vaza para o dashboard.
+``Authorization`` carrega o Bearer; capturar sem redigir vazaria a credencial.
+
 Duas decisões de desenho
 ------------------------
 * **Só observa, nunca interfere.** Se a app levanta, o middleware registra a request
@@ -56,6 +67,38 @@ _TEXTUAL_PREFIXES = (
     "application/x-www-form-urlencoded",
     "text/",
 )
+
+#: Headers cujo VALOR é segredo: redigidos para ``"***"`` na captura. O nome fica
+#: (o operador vê que o header existe), mas o conteúdo não. ``Authorization`` e
+#: ``x-api-key`` carregam credencial; ``cookie``/``set-cookie`` carregam sessão —
+#: capturar sem redigir vazaria tudo isso para o dashboard.
+_SENSITIVE_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "x-auth-token",
+    }
+)
+
+
+def _headers_dict(headers: Any) -> dict:
+    """Lista ASGI de headers ``[(bytes, bytes)]`` → dict ``{nome: valor}``.
+
+    Nome em minúsculas (o ASGI já entrega assim, mas normaliza-se por garantia) e
+    valores/nomes decodificados latin-1 (o charset do protocolo HTTP). Header
+    sensível tem o valor trocado por ``"***"`` — ver :data:`_SENSITIVE_HEADERS`.
+    """
+    result: dict[str, str] = {}
+    for key, value in headers or []:
+        name = key.decode("latin-1", "replace").lower()
+        if name in _SENSITIVE_HEADERS:
+            result[name] = "***"
+        else:
+            result[name] = value.decode("latin-1", "replace")
+    return result
 
 
 def _content_type(headers: Any) -> str:
@@ -97,6 +140,8 @@ class FlareMiddleware:
         ignore_paths: Iterable[str] = ("/health", "/metrics", "/ingest"),
         capture_request_body: bool = False,
         capture_response_body: bool = False,
+        capture_request_headers: bool = False,
+        capture_response_headers: bool = False,
         max_body_bytes: int = 16384,
     ) -> None:
         self.app = app
@@ -107,6 +152,8 @@ class FlareMiddleware:
         self._ignore = frozenset(ignore_paths)
         self._capture_request = capture_request_body
         self._capture_response = capture_response_body
+        self._capture_request_headers = capture_request_headers
+        self._capture_response_headers = capture_response_headers
         self._max_body = max(0, max_body_bytes)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -127,6 +174,9 @@ class FlareMiddleware:
         request_body = bytearray()
         response_body = bytearray()
         response_ct = {"value": ""}
+        # Os headers da response só existem no ``http.response.start`` — guarda-se a
+        # lista crua aqui para o ``_record`` montar o dict depois.
+        response_headers = {"value": None}
 
         async def receive_wrapper() -> MutableMapping[str, Any]:
             # Observa o corpo da request enquanto ele PASSA para a app — sem consumir
@@ -147,6 +197,8 @@ class FlareMiddleware:
                 status_holder["code"] = message["status"]
                 if self._capture_response:
                     response_ct["value"] = _content_type(message.get("headers"))
+                if self._capture_response_headers:
+                    response_headers["value"] = message.get("headers")
             elif (
                 mtype == "http.response.body"
                 and self._capture_response
@@ -166,11 +218,13 @@ class FlareMiddleware:
         except Exception:
             # Registra o 500 e RE-LEVANTA: o middleware observa, não sequestra o erro.
             self._record(scope, method, path, status_holder["code"], start,
-                         request_body, response_body, response_ct["value"])
+                         request_body, response_body, response_ct["value"],
+                         response_headers["value"])
             raise
         else:
             self._record(scope, method, path, status_holder["code"], start,
-                         request_body, response_body, response_ct["value"])
+                         request_body, response_body, response_ct["value"],
+                         response_headers["value"])
 
     def _record(
         self,
@@ -182,6 +236,7 @@ class FlareMiddleware:
         request_body: bytearray,
         response_body: bytearray,
         response_ct: str,
+        response_headers: Any,
     ) -> None:
         """Enfileira a request no Flare. ``client.request`` já é never-raise."""
         duration_ms = round((time.perf_counter() - start) * 1000, 3)
@@ -194,6 +249,10 @@ class FlareMiddleware:
             text = _decode_body(response_body, response_ct)
             if text is not None:
                 attributes["response_body"] = text
+        if self._capture_request_headers:
+            attributes["request_headers"] = _headers_dict(scope.get("headers"))
+        if self._capture_response_headers:
+            attributes["response_headers"] = _headers_dict(response_headers)
         self._client.request(
             method,
             self._route_template(scope) if self._group_paths else path,

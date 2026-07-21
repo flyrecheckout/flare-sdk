@@ -15,10 +15,21 @@ O mapeamento LogRecord → evento do Flare
 * ``record.name`` → atributo ``logger``; ``exc_info`` → atributo ``exception``.
 * O que veio via ``extra={...}`` vira atributo — é assim que campos estruturados
   (``order_id``, ``user_id``) chegam ao Flare sem virar texto no meio da mensagem.
+
+A exceção vai ESTRUTURADA, não como blob de texto
+--------------------------------------------------
+``exc_info`` vira um objeto ``{type, message, traceback, where}``, não a stack crua
+numa string. O porquê: o front do Flare mostra tipo, mensagem e "onde estourou"
+como campos separados (filtráveis, agrupáveis) — um blob de texto sozinho é
+ilegível e não dá para consultar por ``type == "ValueError"``. O ``traceback``
+completo continua lá (como string) para quem precisa da stack inteira; o ``where``
+é o último frame (arquivo:linha in função), o ponto exato da falha.
 """
 from __future__ import annotations
 
 import logging
+import os
+import traceback
 from typing import Any, Optional
 
 from .client import Flare
@@ -86,12 +97,42 @@ class FlareHandler(logging.Handler):
             "logger": record.name,
         }
         if record.exc_info:
-            # A stack formatada é mais útil como um atributo pesquisável do que
-            # concatenada na mensagem.
-            event["exception"] = self.formatter.formatException(record.exc_info) \
-                if self.formatter else logging.Formatter().formatException(record.exc_info)
+            event["exception"] = self._exception_object(record.exc_info)
         event.update(self._extras(record))
         return event
+
+    @staticmethod
+    def _exception_object(exc_info: Any) -> dict:
+        """``exc_info`` → objeto estruturado ``{type, message, traceback, where}``.
+
+        Estruturado em vez de blob porque o front mostra tipo/mensagem/onde
+        separados (e o operador filtra por eles); a string sozinha não é
+        consultável. ``where`` é o ÚLTIMO frame do traceback (arquivo:linha in
+        função) — o ponto onde de fato estourou.
+
+        Never-raise: extrair frame/tipo pode falhar em cenários exóticos (traceback
+        truncado, ``__name__`` ausente). Se falhar, cai num ``where=""`` e no
+        traceback via ``formatException`` — nunca deixa a montagem do evento subir.
+        """
+        exc_type, exc_value, exc_tb = exc_info
+        try:
+            stack = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        except Exception:  # noqa: BLE001
+            stack = logging.Formatter().formatException(exc_info)
+        where = ""
+        try:
+            frames = traceback.extract_tb(exc_tb)
+            if frames:
+                last = frames[-1]
+                where = f"{os.path.basename(last.filename)}:{last.lineno} in {last.name}"
+        except Exception:  # noqa: BLE001
+            where = ""
+        return {
+            "type": exc_type.__name__ if exc_type else "",
+            "message": str(exc_value) if exc_value else "",
+            "traceback": stack,
+            "where": where,
+        }
 
     @staticmethod
     def _extras(record: logging.LogRecord) -> dict:
