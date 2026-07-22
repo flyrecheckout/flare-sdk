@@ -4,7 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "flare-sdk"
-version = "0.4.0"
+# A versão é LIDA de `src/flare_sdk/_version.py` (ver [tool.hatch.version]), não
+# escrita aqui. Ela morava nos dois lugares e divergiu: um release bumpou só o
+# módulo, o build leu este campo e publicou o número ANTIGO — o PyPI recusou com
+# "File already exists". Com uma fonte só, isso não tem como acontecer de novo.
+dynamic = ["version"]
 description = "Cliente leve para enviar logs e requests ao Flare (observabilidade da lunacheckout)."
 readme = "README.md"
 license = { text = "MIT" }
@@ -44,6 +48,11 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/flyrecheckout/flare-sdk"
 Repository = "https://github.com/flyrecheckout/flare-sdk"
+
+[tool.hatch.version]
+# A fonte ÚNICA da versão. O `__init__` e o User-Agent do transporte leem o mesmo
+# módulo, então o número publicado e o que o SDK se diz ser não podem divergir.
+path = "src/flare_sdk/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/flare_sdk"]
