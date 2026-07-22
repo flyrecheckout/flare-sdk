@@ -3,6 +3,20 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
 o projeto segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.5.0]
+
+### Adicionado
+
+- `FlareMiddleware`: opção `flush_after_request` (com `flush_timeout`), para
+  serverless. Em Lambda/Cloud Run a thread de entrega congela com o container, e o
+  reflexo — um `@app.middleware("http")` chamando `flare.flush()` depois do
+  `call_next` — **drena a fila cedo demais**: o `call_next` do `BaseHTTPMiddleware`
+  retorna no `http.response.start`, antes de o corpo ser transmitido e antes de o
+  middleware gravar a request. O evento da request atual ficava para trás e só saía
+  numa invocação seguinte, se houvesse — na prática, a request mais recente nunca
+  aparecia no dashboard. Com a opção, o flush roda dentro do middleware logo após o
+  registro, e não há como inverter a ordem.
+
 ## [0.4.0]
 
 ### Adicionado

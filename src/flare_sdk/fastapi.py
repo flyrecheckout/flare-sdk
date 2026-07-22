@@ -44,6 +44,36 @@ Duas decisões de desenho
 * **Agrupa por rota, não por URL.** Com ``group_paths`` (default), usa o template
   da rota (``/orders/{id}``) em vez do path concreto (``/orders/42``). Sem isso,
   cada id vira um "endpoint" diferente e a tela de métricas explode em cardinalidade.
+
+Serverless: use ``flush_after_request``, não um middleware seu
+--------------------------------------------------------------
+Em Lambda/Cloud Run a thread de entrega **congela junto com o container** ao fim da
+invocação, então o lote precisa sair antes disso. O reflexo é escrever um
+middleware próprio::
+
+    @app.middleware("http")            # ⚠️ NÃO faz o que parece
+    async def flush(request, call_next):
+        response = await call_next(request)
+        flare.flush(timeout=3)
+        return response
+
+**Isso drena a fila cedo demais.** ``@app.middleware("http")`` é um
+``BaseHTTPMiddleware``, e o ``call_next`` dele retorna assim que chega o
+``http.response.start`` — ou seja, **antes** de o corpo ser transmitido e, portanto,
+antes de este middleware gravar a request (que só acontece quando a app termina de
+responder). O flush encontra a fila sem o evento da request atual; ele fica para
+trás e só sai no flush de uma invocação seguinte — se houver. Na prática, **a
+request mais recente nunca aparece no dashboard**.
+
+Com ``flush_after_request=True`` o flush roda **depois** do registro, dentro deste
+middleware, na ordem certa::
+
+    app.add_middleware(FlareMiddleware, client=flare, flush_after_request=True)
+
+É bloqueante de propósito (o ``flush`` do cliente é síncrono): numa invocação
+serverless é exatamente o que se quer — segurar a resposta alguns milissegundos
+para o lote sair. Por isso é **opt-in**: num servidor de longa duração, prefira o
+envio em background e deixe ``False``.
 """
 from __future__ import annotations
 
@@ -144,10 +174,16 @@ class FlareMiddleware:
         capture_request_headers: bool = False,
         capture_response_headers: bool = False,
         max_body_bytes: int = 16384,
+        flush_after_request: bool = False,
+        flush_timeout: float = 3.0,
     ) -> None:
         self.app = app
         self._client = client
         self._group_paths = group_paths
+        # Serverless: drena a fila DEPOIS de gravar a request — ver o docstring do
+        # módulo para por que um middleware próprio de flush chega cedo demais.
+        self._flush_after_request = flush_after_request
+        self._flush_timeout = flush_timeout
         # Rotas de infra (health, scrape de métrica) inundariam a telemetria com
         # ruído de alta frequência e zero valor de investigação.
         self._ignore = frozenset(ignore_paths)
@@ -239,7 +275,17 @@ class FlareMiddleware:
         response_ct: str,
         response_headers: Any,
     ) -> None:
-        """Enfileira a request no Flare. ``client.request`` já é never-raise."""
+        """Enfileira a request no Flare — e, se pedido, drena a fila na sequência.
+
+        O flush mora AQUI, colado no enfileiramento, porque a ordem é o ponto: um
+        middleware externo que drenasse a fila rodaria antes deste registro e
+        deixaria a request atual para trás (ver o docstring do módulo). Sendo os dois
+        a mesma operação, não há como inverter.
+
+        ``client.request`` já é never-raise; o flush é embrulhado pelo mesmo motivo —
+        instrumentação não pode derrubar a app, e este método também roda no caminho
+        de exceção, onde a exceção original precisa continuar subindo intacta.
+        """
         duration_ms = round((time.perf_counter() - start) * 1000, 3)
         attributes: dict[str, Any] = {}
         if self._capture_request:
@@ -261,6 +307,11 @@ class FlareMiddleware:
             duration_ms=duration_ms,
             **attributes,
         )
+        if self._flush_after_request:
+            try:
+                self._client.flush(timeout=self._flush_timeout)
+            except Exception:  # noqa: BLE001 — observar nunca derruba a app.
+                pass
 
     @staticmethod
     def _route_template(scope: Scope) -> str:
