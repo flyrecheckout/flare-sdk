@@ -275,3 +275,101 @@ def test_non_http_scopes_pass_through_untouched() -> None:
     with TestClient(app):
         pass
     assert client.requests == []
+
+
+# ── Flush por request (serverless) ────────────────────────────────────────────
+# O bug que estes testes guardam: em Lambda o container congela ao fim da
+# invocação, e o reflexo é escrever um `@app.middleware("http")` que chama
+# `flare.flush()` depois do `call_next`. Só que o `call_next` do BaseHTTPMiddleware
+# retorna no `http.response.start` — ANTES de o corpo ser transmitido e, portanto,
+# antes de o FlareMiddleware gravar a request. O flush encontra a fila sem o evento
+# atual, e a request mais recente nunca chega ao dashboard.
+
+
+class _FlushingClient(_RecordingClient):
+    """Grava, a cada flush, QUANTAS requests já haviam sido enfileiradas.
+
+    É essa contagem que prova a ordem: com o flush no lugar certo, a request atual
+    já está na fila quando ele roda (>= 1). Contar só "flush foi chamado" passaria
+    igual com o flush cedo demais — que é exatamente o bug.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushes: list[int] = []
+
+    def flush(self, timeout=None):  # noqa: ANN001, ANN201
+        self.flushes.append(len(self.requests))
+        return True
+
+
+def test_no_flush_per_request_by_default() -> None:
+    """Servidor de longa duração: o envio é em background, sem bloquear a resposta."""
+    from starlette.testclient import TestClient
+
+    client = _FlushingClient()
+    TestClient(_app(client)).get("/ok")
+
+    assert client.flushes == []
+
+
+def test_flush_after_request_runs_after_the_request_is_queued() -> None:
+    """A ordem é o ponto: quando o flush roda, a request atual JÁ está na fila."""
+    from starlette.testclient import TestClient
+
+    client = _FlushingClient()
+    TestClient(_app(client, flush_after_request=True)).get("/ok")
+
+    assert len(client.requests) == 1
+    assert client.flushes == [1]  # 1 == a request desta chamada já enfileirada
+
+
+def test_flush_after_request_also_runs_when_the_app_raises() -> None:
+    """No caminho de erro o lote também precisa sair — é o evento mais importante."""
+    from starlette.testclient import TestClient
+
+    client = _FlushingClient()
+    app = _app(client, flush_after_request=True)
+    with pytest.raises(RuntimeError):
+        TestClient(app, raise_server_exceptions=True).get("/boom")
+
+    assert client.flushes == [1]
+
+
+def test_a_failing_flush_never_breaks_the_response() -> None:
+    """Instrumentação não derruba a app: um flush que estoura é engolido."""
+    from starlette.testclient import TestClient
+
+    class _Boom(_RecordingClient):
+        def flush(self, timeout=None):  # noqa: ANN001, ANN201
+            raise RuntimeError("rede caiu no flush")
+
+    client = _Boom()
+    response = TestClient(_app(client, flush_after_request=True)).get("/ok")
+
+    assert response.status_code == 200
+    assert len(client.requests) == 1
+
+
+def test_flush_after_request_survives_an_outer_base_http_middleware() -> None:
+    """A montagem real do Lambda: um BaseHTTPMiddleware por fora do FlareMiddleware.
+
+    É a combinação que produzia o bug. Com o flush DENTRO do middleware, a ordem se
+    mantém mesmo com o `call_next` do outro retornando cedo.
+    """
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.testclient import TestClient
+
+    client = _FlushingClient()
+    app = _app(client, flush_after_request=True, capture_response_body=True)
+
+    async def passthrough(request, call_next):  # noqa: ANN001, ANN201
+        return await call_next(request)
+
+    app.add_middleware(BaseHTTPMiddleware, dispatch=passthrough)
+    TestClient(app).post("/echo", content='{"a":1}',
+                         headers={"content-type": "application/json"})
+
+    assert client.flushes == [1]
+    # E o corpo continua capturado — o flush no lugar certo não o atropela.
+    assert client.requests[0]["attrs"]["response_body"] == '{"received":"{\\"a\\":1}"}'

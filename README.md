@@ -91,6 +91,36 @@ app.add_middleware(FlareMiddleware, client=flare)
 Se a rota levantar, a request é registrada como `500` e a exceção é **re-levantada**
 — o middleware observa, não sequestra o seu erro.
 
+### Em Lambda / Cloud Run: `flush_after_request=True`
+
+Em serverless a thread de entrega **congela junto com o container** ao fim da
+invocação, então o lote precisa sair antes disso:
+
+```python
+app.add_middleware(FlareMiddleware, client=flare, flush_after_request=True)
+```
+
+⚠️ **Não** resolva isso com um middleware próprio:
+
+```python
+@app.middleware("http")            # não faz o que parece
+async def flush(request, call_next):
+    response = await call_next(request)
+    flare.flush(timeout=3)         # roda cedo demais
+    return response
+```
+
+`@app.middleware("http")` é um `BaseHTTPMiddleware`, e o `call_next` dele retorna
+no `http.response.start` — **antes** de o corpo ser transmitido e, portanto, antes
+de o `FlareMiddleware` gravar a request. O flush acha a fila sem o evento atual;
+ele fica para trás e só sai numa invocação seguinte, se houver. O sintoma é
+traiçoeiro: **a request mais recente nunca aparece no dashboard**.
+
+Com a opção, o flush roda dentro do próprio middleware, logo depois do registro —
+não há como inverter a ordem. É bloqueante de propósito (segura a resposta alguns
+ms para o lote sair), por isso é opt-in: num servidor de longa duração deixe `False`
+e use o envio em background.
+
 ## Enviando eventos à mão
 
 Além do handler, você pode mandar logs, requests ou qualquer evento direto:
