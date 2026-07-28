@@ -210,3 +210,22 @@ def test_an_explicit_trace_id_wins_over_the_context() -> None:
         reset_trace_id(token)
 
     assert client.events[0]["trace_id"] == "o-meu"
+
+
+def test_an_explicit_empty_trace_id_suppresses_the_context() -> None:
+    """`extra={"trace_id": ""}` é a app dizendo "este log NÃO pertence a transação
+    nenhuma" — um job disparado de dentro de uma request, mas que é outra coisa.
+    Testar truthiness em vez de PRESENÇA transformava essa supressão no oposto: o
+    log saía amarrado justo à transação da qual se quis separá-lo."""
+    from flare_sdk import reset_trace_id, set_trace_id
+
+    client = FakeClient()
+    logger = _logger_with(FlareHandler(client=client), "t.trace.suprimido")
+
+    token = set_trace_id("do-contexto")
+    try:
+        logger.error("fora da transação", extra={"trace_id": ""})
+    finally:
+        reset_trace_id(token)
+
+    assert client.events[0]["trace_id"] == ""

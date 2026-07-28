@@ -129,7 +129,11 @@ class FlareHandler(logging.Handler):
         # É o que amarra este log à linha de `flare_requests` da mesma chamada —
         # sem isso, cada `logger.error` teria de repetir o id à mão, e bastaria um
         # esquecer para o erro sair órfão justo quando alguém for investigá-lo.
-        if not event.get("trace_id"):
+        # PRESENÇA da chave, não truthiness: um `extra={"trace_id": ""}` é a app
+        # dizendo "este log NÃO pertence a transação nenhuma" — deliberado, e o
+        # contexto sobrescrevê-lo transformaria uma supressão explícita no seu
+        # oposto, amarrando o log justamente à transação da qual se quis separá-lo.
+        if "trace_id" not in event:
             trace_id = get_trace_id()
             if trace_id:
                 event["trace_id"] = trace_id

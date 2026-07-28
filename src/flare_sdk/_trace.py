@@ -84,10 +84,14 @@ def reset_trace_id(token: Token) -> None:
     middleware dentro de outro) o ``None`` apagaria o id do nível de cima em vez
     de devolver o que havia. O token é o que sabe qual era o valor anterior.
 
-    Never-raise: um token de outro contexto levanta ``ValueError``, e uma falha de
-    limpeza não pode derrubar a request que já terminou.
+    Never-raise, e são DOIS erros distintos: ``ValueError`` quando o token veio de
+    outro contexto, ``RuntimeError`` quando ele já foi usado (o ``ContextVar``
+    aceita cada token uma vez só). Os dois significam a mesma coisa aqui — não há o
+    que restaurar —, e nenhum pode derrubar uma request que já terminou de
+    responder. Capturar só um dos dois deixava o outro escapar justo no caminho de
+    limpeza, que é onde ninguém está olhando.
     """
     try:
         _TRACE_ID.reset(token)
-    except ValueError:  # noqa: BLE001 — token de outro contexto: nada a restaurar.
+    except (ValueError, RuntimeError):  # noqa: BLE001 — nada a restaurar.
         pass
