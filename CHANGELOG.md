@@ -3,6 +3,38 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
 o projeto segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.6.0]
+
+### Adicionado
+
+- **`trace_id`: o elo entre um log e a request que o produziu.** O Flare guarda
+  `trace_id` como coluna nas duas tabelas e usa essa coluna para, no dashboard,
+  sair de um erro e abrir a request que o causou (e a volta). O SDK nunca mandava
+  o campo, então a coluna ficava `NULL` em todo evento — os dois sinais existiam
+  lado a lado e não se tocavam, e a funcionalidade estava desligada em silêncio.
+
+  Agora o `FlareMiddleware` abre um escopo de trace por request (um `ContextVar`) e:
+
+  - grava o id na linha da **request**;
+  - todo **log** emitido durante a chamada sai com o mesmo id, sem que o código
+    precise repeti-lo — passar por parâmetro exigiria enfiar o id em toda
+    assinatura entre o middleware e o `logger.error`, e bastaria uma função
+    esquecer para aquele erro sair órfão.
+
+  A app LÊ o id com `get_trace_id()` para usá-lo nas próprias mensagens. A direção
+  importa: o middleware escreve, a app lê. Um `set_trace_id` dentro de um endpoint
+  declarado `def` (não `async def`) roda no threadpool, com uma cópia do contexto,
+  e **não** volta para o middleware — a request seria gravada sem o id que os logs
+  usaram, e o elo quebraria justo nos endpoints síncronos.
+
+  Um id já presente no contexto vence (um `X-Request-Id` do gateway, o id de uma
+  mensagem de fila): quem o pôs está afirmando de que transação a chamada faz
+  parte, e gerar outro por cima partiria o rastro em dois. Quem já gerencia o
+  próprio contexto (OpenTelemetry) desliga com `FlareMiddleware(trace=False)`.
+
+- `set_trace_id` / `get_trace_id` / `reset_trace_id` / `new_trace_id` no topo do
+  pacote.
+
 ## [0.5.0]
 
 ### Adicionado

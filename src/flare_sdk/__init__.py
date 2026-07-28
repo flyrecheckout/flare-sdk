@@ -12,6 +12,7 @@ tocar em ``starlette`` quem só quer o handler de log.
 """
 from __future__ import annotations
 
+from ._trace import get_trace_id, new_trace_id, reset_trace_id, set_trace_id
 from ._transport import FlareTransportError, PermanentError, TransientError
 from ._version import __version__
 from .client import Flare
@@ -23,5 +24,11 @@ __all__ = [
     "FlareTransportError",
     "PermanentError",
     "TransientError",
+    # O elo entre log e request. `get_trace_id` é o que a app usa no dia a dia:
+    # ela LÊ o id que o middleware criou para repeti-lo nas próprias mensagens.
+    "get_trace_id",
+    "new_trace_id",
+    "reset_trace_id",
+    "set_trace_id",
     "__version__",
 ]
