@@ -35,6 +35,7 @@ import os
 import traceback
 from typing import Any, Optional
 
+from ._trace import get_trace_id
 from .client import Flare
 
 #: Atributos que o ``logging`` põe em TODO record. Ficam de fora dos "extras" para
@@ -119,6 +120,23 @@ class FlareHandler(logging.Handler):
         if record.exc_info:
             event["exception"] = self._exception_object(record.exc_info)
         event.update(self._extras(record))
+        # O `trace_id` da transação em curso, quando há uma. Entra DEPOIS dos
+        # extras e só se ninguém já o definiu: um `extra={"trace_id": ...}`
+        # explícito é a app dizendo "este log pertence àquela outra transação"
+        # (um retry, um job disparado por outra request), e o contexto não pode
+        # sobrescrever essa afirmação.
+        #
+        # É o que amarra este log à linha de `flare_requests` da mesma chamada —
+        # sem isso, cada `logger.error` teria de repetir o id à mão, e bastaria um
+        # esquecer para o erro sair órfão justo quando alguém for investigá-lo.
+        # PRESENÇA da chave, não truthiness: um `extra={"trace_id": ""}` é a app
+        # dizendo "este log NÃO pertence a transação nenhuma" — deliberado, e o
+        # contexto sobrescrevê-lo transformaria uma supressão explícita no seu
+        # oposto, amarrando o log justamente à transação da qual se quis separá-lo.
+        if "trace_id" not in event:
+            trace_id = get_trace_id()
+            if trace_id:
+                event["trace_id"] = trace_id
         return event
 
     @staticmethod

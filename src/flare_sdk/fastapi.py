@@ -80,6 +80,7 @@ from __future__ import annotations
 import time
 from typing import Any, Awaitable, Callable, Iterable, MutableMapping, Optional
 
+from ._trace import get_trace_id, new_trace_id, reset_trace_id, set_trace_id
 from .client import Flare
 
 Scope = MutableMapping[str, Any]
@@ -176,6 +177,7 @@ class FlareMiddleware:
         max_body_bytes: int = 16384,
         flush_after_request: bool = False,
         flush_timeout: float = 3.0,
+        trace: bool = True,
     ) -> None:
         self.app = app
         self._client = client
@@ -184,6 +186,15 @@ class FlareMiddleware:
         # módulo para por que um middleware próprio de flush chega cedo demais.
         self._flush_after_request = flush_after_request
         self._flush_timeout = flush_timeout
+        # Gera um `trace_id` por request e o publica no contexto, para os logs da
+        # chamada saírem com o MESMO id que vai para a linha da request. É o elo que
+        # o dashboard usa para sair de um erro e abrir a request que o causou.
+        #
+        # Ligado por default: sem ele o campo fica NULL, e um NULL aqui não é um
+        # dado a menos — é a funcionalidade inteira desligada, em silêncio. Quem
+        # tiver motivo para não gerar (um id de trace já vindo de um OpenTelemetry
+        # que gerencia o próprio contexto) passa `trace=False`.
+        self._trace = trace
         # Rotas de infra (health, scrape de métrica) inundariam a telemetria com
         # ruído de alta frequência e zero valor de investigação.
         self._ignore = frozenset(ignore_paths)
@@ -249,6 +260,19 @@ class FlareMiddleware:
         # caso que precisa dele; senão passa o original e evita uma indireção.
         inner_receive = receive_wrapper if self._capture_request else receive
 
+        # ── O escopo do trace ────────────────────────────────────────────────
+        # Abre aqui, ANTES de a app rodar, porque é aqui que a transação começa —
+        # tudo que ela logar daqui para baixo (inclusive dentro do threadpool de um
+        # endpoint `def`) enxerga o mesmo id, e o `_record` grava esse id na linha
+        # da request. É o que liga os dois sinais no dashboard.
+        #
+        # Um id JÁ definido vence: quem o pôs (um middleware de cima, o consumo de
+        # uma fila, um `X-Request-Id` propagado) está afirmando de que transação
+        # esta chamada faz parte, e sobrescrever isso partiria o rastro em dois.
+        token = None
+        if self._trace and get_trace_id() is None:
+            token = set_trace_id(new_trace_id())
+
         start = time.perf_counter()
         try:
             await self.app(scope, inner_receive, send_wrapper)
@@ -262,6 +286,12 @@ class FlareMiddleware:
             self._record(scope, method, path, status_holder["code"], start,
                          request_body, response_body, response_ct["value"],
                          response_headers["value"])
+        finally:
+            # Fecha o escopo mesmo quando a app estourou: sem isto, num servidor que
+            # reaproveita a task, o id de uma request vazaria para a seguinte — e
+            # dois eventos de transações diferentes apareceriam amarrados.
+            if token is not None:
+                reset_trace_id(token)
 
     def _record(
         self,
@@ -300,6 +330,13 @@ class FlareMiddleware:
             attributes["request_headers"] = _headers_dict(scope.get("headers"))
         if self._capture_response_headers:
             attributes["response_headers"] = _headers_dict(response_headers)
+        # O id da transação vira COLUNA na linha da request (o `/ingest` promove
+        # `trace_id`), não atributo: é por essa coluna que o dashboard casa esta
+        # request com os logs da mesma chamada. Ausente quando `trace=False` ou
+        # quando não há contexto — e aí o campo fica NULL, que é o honesto.
+        trace_id = get_trace_id()
+        if trace_id:
+            attributes["trace_id"] = trace_id
         self._client.request(
             method,
             self._route_template(scope) if self._group_paths else path,

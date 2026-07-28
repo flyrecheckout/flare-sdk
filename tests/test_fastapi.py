@@ -138,7 +138,12 @@ def test_bodies_not_captured_by_default() -> None:
     client = _RecordingClient()
     app = _app(client)  # sem os flags
     TestClient(app).post("/echo", content='{"a":1}')
-    assert client.requests[0]["attrs"] == {}
+    # O `trace_id` NÃO é captura opcional: ele é o elo entre esta request e os logs
+    # dela, e vai sempre (ver `trace=`). O que este teste guarda é o corpo — que
+    # continua ausente sem os flags.
+    attrs = client.requests[0]["attrs"]
+    assert set(attrs) == {"trace_id"}
+    assert "request_body" not in attrs and "response_body" not in attrs
 
 
 def test_captures_request_and_response_bodies_when_enabled() -> None:
@@ -373,3 +378,103 @@ def test_flush_after_request_survives_an_outer_base_http_middleware() -> None:
     assert client.flushes == [1]
     # E o corpo continua capturado — o flush no lugar certo não o atropela.
     assert client.requests[0]["attrs"]["response_body"] == '{"received":"{\\"a\\":1}"}'
+
+
+# ── O elo entre log e request: o trace_id ────────────────────────────────────
+
+
+def test_the_request_row_carries_a_trace_id() -> None:
+    """A RAZÃO DE O CAMPO EXISTIR. Sem ele a linha de request e as linhas de log da
+    mesma chamada ficam lado a lado no Flare sem nada que as ligue, e o dashboard
+    não consegue afirmar qual request produziu qual erro."""
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    TestClient(_app(client)).get("/")
+
+    trace = client.requests[0]["attrs"]["trace_id"]
+    assert trace and len(trace) == 32  # uuid4().hex
+
+
+def test_the_app_reads_the_same_id_the_request_row_gets() -> None:
+    """A DIREÇÃO do contrato: o middleware ESCREVE, a app LÊ. É o que permite ao
+    `logger.error` de dentro do endpoint sair com o mesmo id que foi para a coluna
+    da request — sem isso, log e request teriam ids diferentes e o elo seria uma
+    coincidência, não uma garantia."""
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from flare_sdk import get_trace_id
+
+    visto: list = []
+
+    async def endpoint(request):  # noqa: ANN001, ANN201
+        visto.append(get_trace_id())
+        return PlainTextResponse("ok")
+
+    client = _RecordingClient()
+    app = Starlette(routes=[Route("/x", endpoint)])
+    app.add_middleware(FlareMiddleware, client=client)
+    TestClient(app).get("/x")
+
+    assert visto[0] == client.requests[0]["attrs"]["trace_id"]
+
+
+def test_two_requests_do_not_share_a_trace() -> None:
+    """Duas chamadas são duas transações. Um id compartilhado amarraria o erro de
+    uma ao caminho da outra — o pior tipo de dado: plausível e errado."""
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    cliente_http = TestClient(_app(client))
+    cliente_http.get("/")
+    cliente_http.get("/")
+
+    assert client.requests[0]["attrs"]["trace_id"] != client.requests[1]["attrs"]["trace_id"]
+
+
+def test_an_id_already_in_context_wins() -> None:
+    """Quem já definiu o trace está afirmando de que transação esta chamada faz
+    parte (um id vindo do gateway, de uma fila). Gerar outro por cima partiria o
+    rastro em dois."""
+    from starlette.testclient import TestClient
+
+    from flare_sdk import reset_trace_id, set_trace_id
+
+    token = set_trace_id("id-de-fora")
+    try:
+        client = _RecordingClient()
+        TestClient(_app(client)).get("/")
+    finally:
+        reset_trace_id(token)
+
+    assert client.requests[0]["attrs"]["trace_id"] == "id-de-fora"
+
+
+def test_the_trace_does_not_leak_to_the_next_request() -> None:
+    """O escopo fecha no fim da chamada, inclusive quando a app estoura. Sem isso,
+    num servidor que reaproveita a task, o id de uma request apareceria na
+    seguinte."""
+    from starlette.testclient import TestClient
+
+    from flare_sdk import get_trace_id
+
+    client = _RecordingClient()
+    with pytest.raises(RuntimeError):
+        TestClient(_app(client)).get("/boom")
+
+    assert get_trace_id() is None
+
+
+def test_trace_off_leaves_the_column_null() -> None:
+    """`trace=False` para quem já gerencia o próprio contexto (OpenTelemetry). Aí o
+    campo fica ausente — NULL na coluna — em vez de um id que não corresponde a
+    rastro nenhum."""
+    from starlette.testclient import TestClient
+
+    client = _RecordingClient()
+    TestClient(_app(client, trace=False)).get("/")
+
+    assert "trace_id" not in client.requests[0]["attrs"]

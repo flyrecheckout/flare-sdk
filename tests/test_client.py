@@ -234,3 +234,34 @@ def test_worker_recreated_after_fork(
 
     assert flare._worker is not first_worker
     assert any(e["message"] == "child" for e in fake_transport.sent_events)
+
+
+# ── reset_trace_id: never-raise nos DOIS erros possíveis ─────────────────────
+
+
+def test_resetting_a_token_twice_does_not_raise() -> None:
+    """O `ContextVar` aceita cada token UMA vez: reusá-lo levanta `RuntimeError`
+    (não `ValueError`). Como isto roda no caminho de limpeza — depois de a request
+    ter respondido —, uma exceção aqui derrubaria algo que já deu certo, e num
+    lugar onde ninguém está olhando."""
+    from flare_sdk import reset_trace_id, set_trace_id
+
+    token = set_trace_id("x")
+    reset_trace_id(token)
+    reset_trace_id(token)  # segunda vez: RuntimeError engolido
+
+
+def test_resetting_a_token_from_another_context_does_not_raise() -> None:
+    """Token nascido noutro contexto levanta `ValueError`. Mesma regra: não há o
+    que restaurar, e não há por que estourar."""
+    import contextvars
+
+    from flare_sdk import reset_trace_id, set_trace_id
+
+    capturado = {}
+
+    def cria_token() -> None:
+        capturado["token"] = set_trace_id("de-outro-contexto")
+
+    contextvars.copy_context().run(cria_token)
+    reset_trace_id(capturado["token"])  # ValueError engolido
